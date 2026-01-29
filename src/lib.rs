@@ -491,36 +491,36 @@ impl Criu {
             criu_opts.inherit_fd = inherit_fd_opts;
         }
 
-        if self.orphan_pts_master.is_some() {
-            criu_opts.set_orphan_pts_master(self.orphan_pts_master.unwrap());
+        if let Some(v) = self.orphan_pts_master {
+            criu_opts.set_orphan_pts_master(v);
         }
 
         if self.root.is_some() {
             criu_opts.set_root(self.root.clone().unwrap());
         }
 
-        if self.leave_running.is_some() {
-            criu_opts.set_leave_running(self.leave_running.unwrap());
+        if let Some(v) = self.leave_running {
+            criu_opts.set_leave_running(v);
         }
 
-        if self.ext_unix_sk.is_some() {
-            criu_opts.set_ext_unix_sk(self.ext_unix_sk.unwrap());
+        if let Some(v) = self.ext_unix_sk {
+            criu_opts.set_ext_unix_sk(v);
         }
 
-        if self.shell_job.is_some() {
-            criu_opts.set_shell_job(self.shell_job.unwrap());
+        if let Some(v) = self.shell_job {
+            criu_opts.set_shell_job(v);
         }
 
-        if self.tcp_established.is_some() {
-            criu_opts.set_tcp_established(self.tcp_established.unwrap());
+        if let Some(v) = self.tcp_established {
+            criu_opts.set_tcp_established(v);
         }
 
-        if self.file_locks.is_some() {
-            criu_opts.set_file_locks(self.file_locks.unwrap());
+        if let Some(v) = self.file_locks {
+            criu_opts.set_file_locks(v);
         }
 
-        if self.manage_cgroups.is_some() {
-            criu_opts.set_manage_cgroups(self.manage_cgroups.unwrap());
+        if let Some(v) = self.manage_cgroups {
+            criu_opts.set_manage_cgroups(v);
         }
 
         if self.work_dir_fd != -1 {
@@ -531,8 +531,8 @@ impl Criu {
             criu_opts.set_freeze_cgroup(self.freeze_cgroup.clone().unwrap());
         }
 
-        if self.cgroups_mode.is_some() {
-            let mode = match self.cgroups_mode.as_ref().unwrap() {
+        if let Some(ref cgroups_mode) = self.cgroups_mode {
+            let mode = match cgroups_mode {
                 CgMode::IGNORE => rpc::Criu_cg_mode::IGNORE,
                 CgMode::NONE => rpc::Criu_cg_mode::CG_NONE,
                 CgMode::PROPS => rpc::Criu_cg_mode::PROPS,
@@ -548,12 +548,12 @@ impl Criu {
             criu_opts.set_cgroup_props(self.cgroup_props.clone().unwrap());
         }
 
-        if self.notify_scripts.is_some() {
-            criu_opts.set_notify_scripts(self.notify_scripts.unwrap());
+        if let Some(v) = self.notify_scripts {
+            criu_opts.set_notify_scripts(v);
         }
 
-        if self.rst_sibling.is_some() {
-            criu_opts.set_rst_sibling(self.rst_sibling.unwrap());
+        if let Some(v) = self.rst_sibling {
+            criu_opts.set_rst_sibling(v);
         }
     }
 
