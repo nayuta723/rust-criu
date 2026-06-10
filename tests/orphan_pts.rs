@@ -2,13 +2,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::time::Duration;
 
-/// Integration test: verify orphan-pts-master fd delivery via take_orphan_pts_master_fd().
-///
-/// Spawns loop_pts with an inherited slave PTY fd. loop_pts calls setsid()+TIOCSCTTY
-/// internally. Parent dumps the child (slave only, master stays in parent). On restore,
-/// CRIU sends "orphan-pts-master" notify with the new master fd; the library stores it
-/// and we retrieve it with take_orphan_pts_master_fd() after restore().
-pub fn orphan_pts_master_test(criu_bin_path: &str) {
+fn orphan_pts_master_test(criu_bin_path: &str) {
     if unsafe { libc::geteuid() } != 0 {
         println!("Running orphan_pts_master_test: skip (not root)");
         return;
@@ -16,25 +10,16 @@ pub fn orphan_pts_master_test(criu_bin_path: &str) {
 
     println!("Running orphan_pts_master_test");
 
-    // Open a PTY master fd via /dev/ptmx.  May fail in restricted container
-    // environments where /dev/ptmx is unavailable; skip rather than panic.
-    // O_RDWR:    open for both reading and writing.
-    // O_NOCTTY:  do not make this master fd the controlling terminal of the caller.
     let master_fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
     if master_fd < 0 {
         println!("Running orphan_pts_master_test: skip (posix_openpt failed)");
         return;
     }
-    // grantpt: sets ownership/permissions of the slave device.
-    // unlockpt: removes the internal lock so the slave can be opened.
-    // Both can fail in containers that lack the necessary privileges.
     if unsafe { libc::grantpt(master_fd) } != 0 || unsafe { libc::unlockpt(master_fd) } != 0 {
         unsafe { libc::close(master_fd) };
         println!("Running orphan_pts_master_test: skip (grantpt/unlockpt failed)");
         return;
     }
-    // ptsname_r is the thread-safe variant: it writes the slave device path
-    // (e.g. /dev/pts/N) into a caller-supplied buffer instead of a static one.
     let mut pts_buf = vec![0u8; 64];
     let ret = unsafe {
         libc::ptsname_r(
@@ -51,7 +36,6 @@ pub fn orphan_pts_master_test(criu_bin_path: &str) {
     let slave_path = unsafe { std::ffi::CStr::from_ptr(pts_buf.as_ptr() as *const libc::c_char) }
         .to_string_lossy()
         .into_owned();
-    // Open the slave side so it can be inherited by loop_pts as its controlling terminal.
     let slave_fd = unsafe {
         libc::open(
             std::ffi::CString::new(slave_path).unwrap().as_ptr(),
@@ -64,12 +48,10 @@ pub fn orphan_pts_master_test(criu_bin_path: &str) {
         return;
     }
 
-    // Spawn loop_pts: inherits slave_fd, calls setsid()+TIOCSCTTY internally.
     let mut child = unsafe {
         std::process::Command::new("test/loop_pts")
             .arg(slave_fd.to_string())
             .pre_exec(move || {
-                // Clear FD_CLOEXEC so slave_fd is inherited across exec.
                 libc::fcntl(slave_fd, libc::F_SETFD, 0);
                 Ok(())
             })
@@ -78,12 +60,8 @@ pub fn orphan_pts_master_test(criu_bin_path: &str) {
     };
     let child_pid = child.id() as libc::pid_t;
 
-    // Parent closes slave (child has it), keeps master open during dump.
     unsafe { libc::close(slave_fd) };
 
-    // Wait until loop_pts has called TIOCSCTTY.  Once it does, TIOCGPGRP on the
-    // master fd returns its process group (> 0), which is the reliable signal that
-    // the PTY is fully set up as the child's controlling terminal.
     loop {
         let mut pgrp: libc::pid_t = -1;
         if unsafe { libc::ioctl(master_fd, libc::TIOCGPGRP, &mut pgrp) } == 0 && pgrp > 0 {
@@ -155,7 +133,6 @@ pub fn orphan_pts_master_test(criu_bin_path: &str) {
         "received fd is not a TTY (master)"
     );
 
-    // Kill the restored process to avoid leaving orphan processes.
     unsafe {
         libc::kill(child_pid, libc::SIGKILL);
         libc::waitpid(child_pid, std::ptr::null_mut(), 0);
@@ -163,4 +140,13 @@ pub fn orphan_pts_master_test(criu_bin_path: &str) {
 
     println!("Cleaning up");
     let _ = std::fs::remove_dir_all(img_dir);
+}
+
+#[test]
+fn test() {
+    let Some(criu_bin_path) = std::env::var("CRIU_BINARY").ok() else {
+        eprintln!("skip: CRIU_BINARY not set");
+        return;
+    };
+    orphan_pts_master_test(&criu_bin_path);
 }

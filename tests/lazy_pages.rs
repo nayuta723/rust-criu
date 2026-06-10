@@ -9,7 +9,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const IMAGES_DIR: &str = "test/images";
+const IMAGES_DIR: &str = "test/lazy_pages_images";
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -24,8 +24,7 @@ fn create_state_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     Ok((r, w))
 }
 
-// Create a checkpoint with lazy-pages enabled, then restore it.
-pub fn lazy_pages_test(criu_bin_path: &str) {
+fn lazy_pages_test(criu_bin_path: &str) {
     println!("Running lazy_pages_test");
 
     let pid: i32 = match Command::new("test/piggie").output() {
@@ -49,8 +48,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
     let directory = std::fs::File::open(IMAGES_DIR).unwrap();
     let images_dir_fd = directory.as_raw_fd();
 
-    // Wait via status_fd until dump's page-server is listening on TCP; otherwise
-    // the lazy-pages daemon's connect() races the page-server's bind()/listen().
     let (pipe_r, pipe_w) = match create_state_pipe() {
         Ok(p) => p,
         Err(e) => {
@@ -59,8 +56,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
         }
     };
 
-    // Dynamically choose a free ephemeral port so a leaked page-server
-    // from an earlier run does not hang this test with EADDRINUSE.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
     drop(listener);
@@ -68,7 +63,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
 
     let criu_bin_for_dump = criu_bin_path.to_string();
     let dump_handle = thread::spawn(move || -> Result<(), String> {
-        // Keep pipe_w alive until criu.dump() spawns CRIU swrk so the writer fd is inherited.
         let _pipe_w = pipe_w;
         let mut criu = rust_criu::Criu::new_with_criu_path(criu_bin_for_dump)
             .map_err(|e| format!("Criu::new failed: {:#?}", e))?;
@@ -92,9 +86,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
         );
     }
 
-    // CRIU writes inventory.img once the dump-side state is established;
-    // its absence here means the page-server signalled readiness without
-    // producing a usable image set, so there is nothing for the daemon to serve.
     if !std::path::Path::new(IMAGES_DIR)
         .join("inventory.img")
         .exists()
@@ -104,8 +95,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
         panic!("inventory.img was not written to {}", IMAGES_DIR);
     }
 
-    // Launch the lazy-pages daemon and wait via --status-fd until it is listening
-    // on lazy-pages.socket
     let (daemon_pipe_r, daemon_pipe_w) = match create_state_pipe() {
         Ok(p) => p,
         Err(e) => {
@@ -163,14 +152,11 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
             .map_err(|e| format!("Criu::new failed: {:#?}", e))?;
         criu.set_images_dir_fd(images_dir_fd);
         criu.set_lazy_pages(true);
-        // Restore as a sibling so the task outlives the short-lived CRIU swrk for the post-restore liveness check.
         criu.set_rst_sibling(true);
         criu.restore().map_err(|e| format!("{:#?}", e))
     })();
 
     if let Err(e) = restore_result {
-        // Tear down background tasks: the daemon may linger if restore failed,
-        // and dump() unblocks only after the daemon is gone.
         let _ = lazy_daemon.kill();
         let _ = lazy_daemon.wait();
         let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
@@ -178,8 +164,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
         panic!("criu restore failed: {:#?}", e);
     }
 
-    // Check liveness while the lazy-pages daemon is still serving page faults;
-    // once the daemon exits, the restored task will follow it.
     if let Err(err) = kill(Pid::from_raw(pid), None) {
         let _ = lazy_daemon.kill();
         let _ = lazy_daemon.wait();
@@ -202,7 +186,6 @@ pub fn lazy_pages_test(criu_bin_path: &str) {
 }
 
 fn wait_for_ready(fd: BorrowedFd<'_>, timeout: Duration) -> bool {
-    // Set read pipe to non-blocking so the timeout loop isn't blocked forever if no data arrives
     let flags = nix::fcntl::OFlag::from_bits_truncate(
         nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL).expect("F_GETFL failed"),
     );
@@ -217,7 +200,6 @@ fn wait_for_ready(fd: BorrowedFd<'_>, timeout: Duration) -> bool {
     loop {
         match nix::unistd::read(fd, &mut buf) {
             Ok(1) => return true,
-            // EOF means CRIU closed its end without sending readiness.
             Ok(_) => return false,
             Err(Errno::EAGAIN) | Err(Errno::EINTR) => {}
             Err(_) => return false,
@@ -227,4 +209,13 @@ fn wait_for_ready(fd: BorrowedFd<'_>, timeout: Duration) -> bool {
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+#[test]
+fn test() {
+    let Some(criu_bin_path) = std::env::var("CRIU_BINARY").ok() else {
+        eprintln!("skip: CRIU_BINARY not set");
+        return;
+    };
+    lazy_pages_test(&criu_bin_path);
 }

@@ -3,10 +3,7 @@ use std::os::unix::process::CommandExt;
 
 const EXTERNAL_NETNS_NAME: &str = "rust_criu_netns_test";
 
-/// RAII guard that always deletes the test netns on drop.
-/// Ensures cleanup on both success and panic paths.
 struct NetnsGuard;
-
 impl Drop for NetnsGuard {
     fn drop(&mut self) {
         let _ = std::process::Command::new("ip")
@@ -15,16 +12,12 @@ impl Drop for NetnsGuard {
     }
 }
 
-/// External network namespace test: dump a process in a netns, restore into that same netns
-/// using --external net[inode]:path so CRIU restores into the existing namespace.
-/// Skipped unless root and `ip netns` is available.
-pub fn external_netns_test(criu_bin_path: &str) {
+fn external_netns_test(criu_bin_path: &str) {
     if unsafe { libc::geteuid() } != 0 {
         println!("external_netns_test: skip (not root)");
         return;
     }
 
-    // Create netns (requires ip from iproute2)
     match std::process::Command::new("ip")
         .args(["netns", "add", EXTERNAL_NETNS_NAME])
         .output()
@@ -50,12 +43,10 @@ pub fn external_netns_test(criu_bin_path: &str) {
     let _guard = NetnsGuard;
 
     let netns_path = format!("/var/run/netns/{}", EXTERNAL_NETNS_NAME);
-    // Open netns once: for setns in child and for dump inode/restore inherit_fd.
     let ns_file = std::fs::File::open(&netns_path)
         .unwrap_or_else(|e| panic!("failed to open namespace: {:#?}", e));
     let netns_fd = ns_file.as_raw_fd();
 
-    // Run loop in the netns via setns(CLONE_NEWNET) so we keep the same mount namespace as the parent.
     let mut child = match unsafe {
         std::process::Command::new("test/loop")
             .stdin(std::process::Stdio::null())
@@ -81,10 +72,10 @@ pub fn external_netns_test(criu_bin_path: &str) {
         reader.read_line(&mut line).unwrap();
         line.trim().parse().unwrap_or(0)
     };
-
     if pid == 0 {
         panic!("failed to get PID from loop process");
     }
+
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(ns_file.as_raw_fd(), &mut stat) } != 0 {
         let _ = child.wait();
@@ -118,11 +109,9 @@ pub fn external_netns_test(criu_bin_path: &str) {
     }
     let _ = child.wait();
 
-    // Restore into existing netns via inherit_fd. Key must be the external id from dump (extRootNetNS).
-    // Open netns and clear CLOEXEC so the child (criu swrk) inherits the fd (crun-style).
     let netns_file = std::fs::File::open(&netns_path).unwrap();
     let netns_fd = netns_file.as_raw_fd();
-    unsafe { libc::fcntl(netns_fd, libc::F_SETFD, 0) }; // clear CLOEXEC so child inherits
+    unsafe { libc::fcntl(netns_fd, libc::F_SETFD, 0) };
     criu.set_images_dir_fd(directory.as_raw_fd());
     criu.set_log_file("restore.log".to_string());
     criu.set_log_level(4);
@@ -135,9 +124,6 @@ pub fn external_netns_test(criu_bin_path: &str) {
         panic!("external_netns restore failed: {:#?}", e);
     }
 
-    // Verify the restored process is in the expected network namespace by
-    // comparing the inode of /proc/<pid>/ns/net with the one we recorded
-    // before dump.
     let proc_netns = std::ffi::CString::new(format!("/proc/{}/ns/net", pid)).unwrap();
     let mut restored_stat: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::stat(proc_netns.as_ptr(), &mut restored_stat) } != 0 {
@@ -158,4 +144,13 @@ pub fn external_netns_test(criu_bin_path: &str) {
     if let Err(e) = std::fs::remove_dir_all(img_dir) {
         panic!("remove_dir_all {} failed: {:#?}", img_dir, e);
     }
+}
+
+#[test]
+fn test() {
+    let Some(criu_bin_path) = std::env::var("CRIU_BINARY").ok() else {
+        eprintln!("skip: CRIU_BINARY not set");
+        return;
+    };
+    external_netns_test(&criu_bin_path);
 }

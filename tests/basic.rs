@@ -1,7 +1,6 @@
 use std::os::unix::io::AsRawFd;
 
-/// Basic dump/restore test using piggie (original test)
-pub fn basic_test(criu_bin_path: &str) {
+fn basic_test(criu_bin_path: &str) {
     println!("Running basic test");
     let pid = match std::process::Command::new("test/piggie").output() {
         Ok(p) => String::from_utf8_lossy(&p.stdout).parse().unwrap_or(0),
@@ -63,4 +62,13 @@ pub fn basic_test(criu_bin_path: &str) {
             e
         );
     }
+}
+
+#[test]
+fn test() {
+    let Some(criu_bin_path) = std::env::var("CRIU_BINARY").ok() else {
+        eprintln!("skip: CRIU_BINARY not set");
+        return;
+    };
+    basic_test(&criu_bin_path);
 }
